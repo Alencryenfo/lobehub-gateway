@@ -1,8 +1,8 @@
 FROM golang:1.23-alpine AS builder
 WORKDIR /src
-COPY device-gateway-go/go.mod ./
-COPY device-gateway-go/cmd ./cmd
-COPY device-gateway-go/internal ./internal
+COPY ./go.mod ./
+COPY ./cmd ./cmd
+COPY ./internal ./internal
 RUN go build -trimpath -ldflags='-s -w' -o /out/device-gateway-go ./cmd/device-gateway-go
 
 FROM alpine:3.20
