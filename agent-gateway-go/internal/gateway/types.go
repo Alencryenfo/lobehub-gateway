@@ -23,6 +23,16 @@ type authMessage struct {
 	Type      string `json:"type"`
 }
 
+type resumeMessage struct {
+	LastEventID string `json:"lastEventId"`
+	WantStatus  bool   `json:"wantStatus,omitempty"`
+}
+
+type resumeCompleteMessage struct {
+	Status SessionStatus `json:"status"`
+	Type   string        `json:"type"`
+}
+
 type clientAttachment struct {
 	Authenticated bool
 	ConnectedAt   int64
