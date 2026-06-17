@@ -271,7 +271,7 @@ func (o *operation) resolveInput(requestID string, content string) {
 	}
 }
 
-func (o *operation) handleResume(conn *operationConnection, lastEventID string) {
+func (o *operation) handleResume(conn *operationConnection, lastEventID string, wantStatus bool) {
 	o.mu.RLock()
 	idx := -1
 	for i, event := range o.eventBuffer {
@@ -288,9 +288,20 @@ func (o *operation) handleResume(conn *operationConnection, lastEventID string) 
 	for _, event := range missed {
 		payloads = append(payloads, append(json.RawMessage(nil), event.Data...))
 	}
+	status := o.record.Status
+	if status == "" {
+		// Resume is scoped to an existing operation; this is only a defensive fallback.
+		status = StatusRunning
+	}
 	o.mu.RUnlock()
 	for _, payload := range payloads {
 		_ = conn.writeRaw(payload)
+	}
+	if wantStatus {
+		_ = conn.writeJSON(resumeCompleteMessage{
+			Type:   "resume_complete",
+			Status: status,
+		})
 	}
 }
 
@@ -654,11 +665,9 @@ func (c *operationConnection) handleAuth(payload []byte) {
 func (c *operationConnection) handleAuthenticatedMessage(messageType string, payload []byte) {
 	switch messageType {
 	case "resume":
-		var msg struct {
-			LastEventID string `json:"lastEventId"`
-		}
+		var msg resumeMessage
 		if json.Unmarshal(payload, &msg) == nil {
-			c.operation.handleResume(c, msg.LastEventID)
+			c.operation.handleResume(c, msg.LastEventID, msg.WantStatus)
 		}
 	case "heartbeat":
 		c.recordHeartbeat()

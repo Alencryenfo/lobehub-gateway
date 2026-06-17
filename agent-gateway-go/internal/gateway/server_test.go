@@ -122,10 +122,18 @@ func TestWebSocketPushAndResume(t *testing.T) {
 	defer ws2.close()
 	ws2.writeJSON(t, map[string]any{"type": "auth", "token": "service-token"})
 	_ = ws2.readJSON(t)
-	ws2.writeJSON(t, map[string]any{"type": "resume", "lastEventId": "1"})
+	ws2.writeJSON(t, map[string]any{
+		"type":        "resume",
+		"lastEventId": "1",
+		"wantStatus":  true,
+	})
 	resumed := ws2.readJSON(t)
 	if resumed["type"] != "agent_event" || resumed["id"] != "2" {
 		t.Fatalf("unexpected resumed event: %+v", resumed)
+	}
+	complete := ws2.readJSON(t)
+	if complete["type"] != "resume_complete" || complete["status"] != string(StatusRunning) {
+		t.Fatalf("unexpected resume complete: %+v", complete)
 	}
 }
 
