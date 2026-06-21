@@ -132,8 +132,11 @@ func (o *operation) pushEvent(event agentStreamEvent) {
 	o.mu.Unlock()
 	broadcast(connections, msg)
 
-	if event.Type == "agent_runtime_end" {
+	switch event.Type {
+	case "agent_runtime_end":
 		o.handleAgentRuntimeEnd(event)
+	case "error":
+		o.handleSessionEnd(StatusError, "")
 	}
 }
 
@@ -152,10 +155,11 @@ func (o *operation) handleAgentRuntimeEnd(event agentStreamEvent) {
 	var data agentRuntimeEndData
 	_ = json.Unmarshal(event.Data, &data)
 	status := StatusCompleted
-	if data.Reason == "error" {
-		status = StatusError
-	} else if data.Reason == "interrupted" {
+	switch data.Reason {
+	case "interrupted", "waiting_for_async_tool":
 		status = StatusInterrupted
+	case "error", "failed":
+		status = StatusError
 	}
 	o.handleSessionEnd(status, data.ReasonDetail)
 }
