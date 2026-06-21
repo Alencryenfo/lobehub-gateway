@@ -167,6 +167,10 @@ func (o *operation) handleAgentRuntimeEnd(event agentStreamEvent) {
 func (o *operation) handleSessionEnd(status SessionStatus, summary string) {
 	msg := map[string]any{"summary": summary, "type": "session_complete"}
 	o.mu.Lock()
+	if isTerminalStatus(o.record.Status) {
+		o.mu.Unlock()
+		return
+	}
 	o.record.Status = status
 	id := o.nextEventIDLocked()
 	msg["id"] = id
