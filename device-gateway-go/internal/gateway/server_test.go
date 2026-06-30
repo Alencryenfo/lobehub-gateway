@@ -49,7 +49,7 @@ func TestHTTPAuthAndOfflineResponses(t *testing.T) {
 
 	res = postJSON(t, httpSrv.URL+"/api/device/status", "service-token", `{}`)
 	assertStatus(t, res, http.StatusBadRequest)
-	assertBody(t, res, "Missing userId")
+	assertBody(t, res, "Missing userId or workspaceId")
 
 	res = postJSON(t, httpSrv.URL+"/api/device/status", "service-token", `{"userId":"u1"}`)
 	assertStatus(t, res, http.StatusOK)
@@ -173,6 +173,138 @@ func TestWebSocketServiceTokenHeartbeatAndRPC(t *testing.T) {
 	}
 }
 
+func TestWorkspaceRoutingIsolationAndWireProtocol(t *testing.T) {
+	srv := NewServer(Config{ServiceToken: "service-token"})
+	srv.authTimeout = time.Second
+	httpSrv := httptest.NewServer(srv.Routes())
+	defer httpSrv.Close()
+
+	personal := dialTestWS(t, httpSrv.URL, "/ws?userId=u1&deviceId=shared&connectionId=personal")
+	defer personal.close()
+	personal.sendJSON(t, map[string]any{"type": "auth", "token": "service-token"})
+	assertWSJSON(t, personal, map[string]any{"type": "auth_success"})
+
+	workspace := dialTestWS(t, httpSrv.URL, "/ws?workspaceId=w1&deviceId=shared&connectionId=workspace")
+	defer workspace.close()
+	workspace.sendJSON(t, map[string]any{"type": "auth", "token": "service-token"})
+	assertWSJSON(t, workspace, map[string]any{"type": "auth_success"})
+
+	res := postJSON(t, httpSrv.URL+"/api/device/status", "service-token", `{"userId":"u1"}`)
+	assertStatus(t, res, http.StatusOK)
+	assertJSON(t, res, map[string]any{"deviceCount": float64(1), "online": true})
+
+	res = postJSON(t, httpSrv.URL+"/api/device/status", "service-token", `{"workspaceId":"w1"}`)
+	assertStatus(t, res, http.StatusOK)
+	assertJSON(t, res, map[string]any{"deviceCount": float64(1), "online": true})
+
+	toolDone := make(chan map[string]any, 1)
+	go func() {
+		res := postJSON(t, httpSrv.URL+"/api/device/tool-call", "service-token", `{"userId":"u1","workspaceId":"w1","deviceId":"shared","toolCall":{"identifier":"builtin","apiName":"echo","arguments":"{}"},"timeout":1000}`)
+		assertStatus(t, res, http.StatusOK)
+		var body map[string]any
+		decodeJSON(t, res, &body)
+		toolDone <- body
+	}()
+	toolReq := workspace.readJSON(t)
+	if toolReq["type"] != "tool_call_request" || toolReq["requestId"] == "" {
+		t.Fatalf("unexpected workspace tool request: %#v", toolReq)
+	}
+	if _, ok := toolReq["workspaceId"]; ok {
+		t.Fatalf("tool_call_request must not include workspaceId: %#v", toolReq)
+	}
+	wsExpectNoMessage(t, personal, 100*time.Millisecond)
+	workspace.sendJSON(t, map[string]any{"type": "tool_call_response", "requestId": toolReq["requestId"], "result": map[string]any{"content": "from workspace", "success": true}})
+	if body := <-toolDone; body["content"] != "from workspace" {
+		t.Fatalf("unexpected workspace tool response: %#v", body)
+	}
+
+	rpcDone := make(chan map[string]any, 1)
+	go func() {
+		res := postJSON(t, httpSrv.URL+"/api/device/rpc", "service-token", `{"workspaceId":"w1","deviceId":"shared","method":"initWorkspace","params":{"scope":"/repo"}}`)
+		assertStatus(t, res, http.StatusOK)
+		var body map[string]any
+		decodeJSON(t, res, &body)
+		rpcDone <- body
+	}()
+	rpcReq := workspace.readJSON(t)
+	if rpcReq["type"] != "rpc_request" || rpcReq["method"] != "initWorkspace" || rpcReq["requestId"] == "" {
+		t.Fatalf("unexpected workspace rpc request: %#v", rpcReq)
+	}
+	if _, ok := rpcReq["workspaceId"]; ok {
+		t.Fatalf("rpc_request must not include workspaceId: %#v", rpcReq)
+	}
+	workspace.sendJSON(t, map[string]any{"type": "rpc_response", "requestId": rpcReq["requestId"], "result": map[string]any{"data": map[string]any{"ok": true}, "success": true}})
+	if body := <-rpcDone; body["success"] != true {
+		t.Fatalf("unexpected workspace rpc response: %#v", body)
+	}
+
+	messageDone := make(chan map[string]any, 1)
+	go func() {
+		res := postJSON(t, httpSrv.URL+"/api/device/message-api", "service-token", `{"workspaceId":"w1","deviceId":"shared","api":{"platform":"imessage","apiName":"sendText","payload":{"message":"hello"}}}`)
+		assertStatus(t, res, http.StatusOK)
+		var body map[string]any
+		decodeJSON(t, res, &body)
+		messageDone <- body
+	}()
+	messageReq := workspace.readJSON(t)
+	if messageReq["type"] != "message_api_request" || messageReq["requestId"] == "" {
+		t.Fatalf("unexpected workspace message api request: %#v", messageReq)
+	}
+	if _, ok := messageReq["workspaceId"]; ok {
+		t.Fatalf("message_api_request must not include workspaceId: %#v", messageReq)
+	}
+	workspace.sendJSON(t, map[string]any{"type": "message_api_response", "requestId": messageReq["requestId"], "result": map[string]any{"content": "sent", "success": true}})
+	if body := <-messageDone; body["content"] != "sent" {
+		t.Fatalf("unexpected workspace message api response: %#v", body)
+	}
+}
+
+func TestAgentRunForwardsArgsAndImageListOnly(t *testing.T) {
+	srv := NewServer(Config{ServiceToken: "service-token"})
+	srv.authTimeout = time.Second
+	httpSrv := httptest.NewServer(srv.Routes())
+	defer httpSrv.Close()
+
+	ws := dialTestWS(t, httpSrv.URL, "/ws?workspaceId=w1&deviceId=d1&connectionId=conn-1")
+	defer ws.close()
+	ws.sendJSON(t, map[string]any{"type": "auth", "token": "service-token"})
+	assertWSJSON(t, ws, map[string]any{"type": "auth_success"})
+
+	done := make(chan map[string]any, 1)
+	go func() {
+		res := postJSON(t, httpSrv.URL+"/api/device/agent/run", "service-token", `{"userId":"u1","workspaceId":"w1","deviceId":"d1","operationId":"op-args","agentType":"claude-code","jwt":"jwt-1","prompt":"run","topicId":"topic-1","args":["--verbose","task"],"imageList":[{"id":"img-1","url":"https://example.com/a.png"}],"timeout":1000}`)
+		assertStatus(t, res, http.StatusOK)
+		var body map[string]any
+		decodeJSON(t, res, &body)
+		done <- body
+	}()
+
+	request := ws.readJSON(t)
+	if request["type"] != "agent_run_request" || request["operationId"] != "op-args" {
+		t.Fatalf("unexpected agent run request: %#v", request)
+	}
+	args, ok := request["args"].([]any)
+	if !ok || len(args) != 2 || args[0] != "--verbose" || args[1] != "task" {
+		t.Fatalf("agent_run_request missing args: %#v", request)
+	}
+	imageList, ok := request["imageList"].([]any)
+	if !ok || len(imageList) != 1 {
+		t.Fatalf("agent_run_request missing imageList: %#v", request)
+	}
+	image, ok := imageList[0].(map[string]any)
+	if !ok || image["id"] != "img-1" || image["url"] != "https://example.com/a.png" {
+		t.Fatalf("unexpected imageList payload: %#v", request)
+	}
+	if _, ok := request["workspaceId"]; ok {
+		t.Fatalf("agent_run_request must not include workspaceId: %#v", request)
+	}
+
+	ws.sendJSON(t, map[string]any{"operationId": "op-args", "status": "accepted", "type": "agent_run_ack"})
+	if body := <-done; body["success"] != true {
+		t.Fatalf("unexpected agent run response: %#v", body)
+	}
+}
+
 func TestWebSocketAuthTimeoutAndConnectionIDReplacement(t *testing.T) {
 	srv := NewServer(Config{ServiceToken: "service-token"})
 	srv.authTimeout = 50 * time.Millisecond
@@ -234,6 +366,52 @@ func TestWebSocketJWTClaimValidation(t *testing.T) {
 	}
 	if code, reason := notYetActive.readClose(t); code != wsClosePolicy || reason != `"nbf" claim timestamp check failed` {
 		t.Fatalf("unexpected nbf jwt close: %d %q", code, reason)
+	}
+}
+
+func TestWebSocketWorkspaceJWTClaimValidation(t *testing.T) {
+	jwks, signClaims := testJWTSignerWithClaims(t)
+	srv := NewServer(Config{JWKSPublicKey: jwks, ServiceToken: "service-token"})
+	srv.authTimeout = time.Second
+	httpSrv := httptest.NewServer(srv.Routes())
+	defer httpSrv.Close()
+
+	claims := func(workspaceID string) map[string]any {
+		return map[string]any{
+			"exp":          time.Now().Add(time.Minute).Unix(),
+			"iat":          time.Now().Unix(),
+			"nbf":          time.Now().Add(-time.Minute).Unix(),
+			"workspace_id": workspaceID,
+		}
+	}
+
+	fresh := dialTestWS(t, httpSrv.URL, "/ws?workspaceId=w1&deviceId=d1")
+	defer fresh.close()
+	fresh.sendJSON(t, map[string]any{"type": "auth", "token": signClaims(claims("w1")), "tokenType": "jwt"})
+	assertWSJSON(t, fresh, map[string]any{"type": "auth_success"})
+
+	mismatch := dialTestWS(t, httpSrv.URL, "/ws?workspaceId=w1&deviceId=d2")
+	defer mismatch.close()
+	mismatch.sendJSON(t, map[string]any{"type": "auth", "token": signClaims(claims("w2")), "tokenType": "jwt"})
+	msg := mismatch.readJSON(t)
+	if msg["type"] != "auth_failed" || msg["reason"] != "workspaceId mismatch" {
+		t.Fatalf("expected workspace mismatch auth_failed, got %#v", msg)
+	}
+	if code, reason := mismatch.readClose(t); code != wsClosePolicy || reason != "workspaceId mismatch" {
+		t.Fatalf("unexpected workspace mismatch close: %d %q", code, reason)
+	}
+
+	missing := dialTestWS(t, httpSrv.URL, "/ws?workspaceId=w1&deviceId=d3")
+	defer missing.close()
+	missing.sendJSON(t, map[string]any{"type": "auth", "token": signClaims(map[string]any{
+		"exp": time.Now().Add(time.Minute).Unix(),
+		"iat": time.Now().Unix(),
+		"nbf": time.Now().Add(-time.Minute).Unix(),
+		"sub": "jwt-user",
+	}), "tokenType": "jwt"})
+	msg = missing.readJSON(t)
+	if msg["type"] != "auth_failed" || msg["reason"] != "workspaceId mismatch" {
+		t.Fatalf("expected missing workspace auth_failed, got %#v", msg)
 	}
 }
 
@@ -501,6 +679,20 @@ func base64Std(value []byte) string {
 
 func testJWTSigner(t *testing.T) (string, func(string, time.Time, time.Time) string) {
 	t.Helper()
+	jwks, signClaims := testJWTSignerWithClaims(t)
+	return jwks, func(sub string, exp time.Time, nbf time.Time) string {
+		t.Helper()
+		return signClaims(map[string]any{
+			"exp": exp.Unix(),
+			"iat": time.Now().Unix(),
+			"nbf": nbf.Unix(),
+			"sub": sub,
+		})
+	}
+}
+
+func testJWTSignerWithClaims(t *testing.T) (string, func(map[string]any) string) {
+	t.Helper()
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatal(err)
@@ -519,18 +711,13 @@ func testJWTSigner(t *testing.T) (string, func(string, time.Time, time.Time) str
 		t.Fatal(err)
 	}
 
-	return string(jwks), func(sub string, exp time.Time, nbf time.Time) string {
+	return string(jwks), func(claims map[string]any) string {
 		t.Helper()
 		header, err := json.Marshal(map[string]any{"alg": "RS256", "typ": "JWT"})
 		if err != nil {
 			t.Fatal(err)
 		}
-		payload, err := json.Marshal(map[string]any{
-			"exp": exp.Unix(),
-			"iat": time.Now().Unix(),
-			"nbf": nbf.Unix(),
-			"sub": sub,
-		})
+		payload, err := json.Marshal(claims)
 		if err != nil {
 			t.Fatal(err)
 		}

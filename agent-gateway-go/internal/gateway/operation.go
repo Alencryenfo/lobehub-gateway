@@ -128,14 +128,16 @@ func (o *operation) pushEvent(event agentStreamEvent) {
 	o.lastEventAt = time.Now()
 	o.lastEventTyp = event.Type
 	o.scheduleWatchdogLocked()
+	operationID := o.record.OperationID
 	connections := o.authenticatedConnectionsLocked()
 	o.mu.Unlock()
 	broadcast(connections, msg)
 
-	switch event.Type {
-	case "agent_runtime_end":
+	if event.Type == "agent_runtime_end" && (event.OperationID == "" || event.OperationID == operationID) {
 		o.handleAgentRuntimeEnd(event)
-	case "error":
+		return
+	}
+	if event.Type == "error" {
 		o.handleSessionEnd(StatusError, "")
 	}
 }

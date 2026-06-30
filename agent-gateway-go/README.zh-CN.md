@@ -35,6 +35,8 @@
 
 所有 `/api/operations/*` 接口都要求 `Authorization: Bearer <SERVICE_TOKEN>`。`/ws` 通过首条 WebSocket 消息认证，消息可携带 LobeHub Server 签发的 JWT（用 `JWKS_PUBLIC_KEY` 校验），或携带共享的 service token。
 
+在 supervisor/member mirror 场景中，事件可能被投递到一个 operation channel，但 payload 内仍保留另一个 `event.operationId`。gateway 会继续把该事件转发给浏览器，但只有当 `agent_runtime_end` 的 `event.operationId` 为空或等于当前 operation 时，才把当前 operation 视为终态。浏览器可发送 `{ "type": "resume", "lastEventId": "...", "wantStatus": true }` 恢复连接；如请求了状态，gateway 会在 replay 缓冲事件后返回 `{ "type": "resume_complete", "status": "..." }`。
+
 ## 配置
 
 | 变量 | 默认值 | 说明 |

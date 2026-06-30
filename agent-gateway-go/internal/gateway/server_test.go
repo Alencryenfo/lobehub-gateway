@@ -217,6 +217,58 @@ func TestConfirmationAndInput(t *testing.T) {
 	}
 }
 
+func TestMirroredRuntimeEndDoesNotEndDeliveryOperation(t *testing.T) {
+	srv, ts := testServer()
+	defer ts.Close()
+	postJSON(t, ts.URL+"/api/operations/init", map[string]any{"operationId": "op-supervisor", "userId": "user-1"}, http.StatusOK)
+
+	ws := dialWebSocket(t, ts.URL, "/ws?operationId=op-supervisor")
+	defer ws.close()
+	ws.writeJSON(t, map[string]any{"type": "auth", "token": "service-token"})
+	_ = ws.readJSON(t)
+
+	postJSON(t, ts.URL+"/api/operations/push-event", map[string]any{
+		"operationId": "op-supervisor",
+		"event": map[string]any{
+			"data":        map[string]any{},
+			"operationId": "op-member",
+			"stepIndex":   0,
+			"timestamp":   time.Now().UnixMilli(),
+			"type":        "agent_runtime_end",
+		},
+	}, http.StatusOK)
+
+	msg := ws.readJSON(t)
+	if msg["type"] != "agent_event" || msg["id"] != "1" {
+		t.Fatalf("expected mirrored agent_event only, got %+v", msg)
+	}
+	wsExpectNoMessage(t, ws, 100*time.Millisecond)
+	_, status := srv.getOperation("op-supervisor").statusSnapshot()
+	if status != StatusRunning {
+		t.Fatalf("expected supervisor to remain running, got %s", status)
+	}
+}
+
+func TestRuntimeEndGuardAllowsOwnAndLegacyEvents(t *testing.T) {
+	srv := NewServer(Config{ServiceToken: "service-token", LobeAPIBaseURL: "http://127.0.0.1:1"})
+
+	own := srv.getOrCreateOperation("op-own")
+	own.init("op-own", "user-1")
+	own.pushEvent(agentStreamEvent{Data: json.RawMessage(`{}`), OperationID: "op-own", Type: "agent_runtime_end"})
+	_, status := own.statusSnapshot()
+	if status != StatusCompleted {
+		t.Fatalf("expected own runtime end to complete operation, got %s", status)
+	}
+
+	legacy := srv.getOrCreateOperation("op-legacy")
+	legacy.init("op-legacy", "user-1")
+	legacy.pushEvent(agentStreamEvent{Data: json.RawMessage(`{}`), Type: "agent_runtime_end"})
+	_, status = legacy.statusSnapshot()
+	if status != StatusCompleted {
+		t.Fatalf("expected legacy runtime end to complete operation, got %s", status)
+	}
+}
+
 func TestInactivityWatchdogReconcilesPhantomTimeout(t *testing.T) {
 	finalizeSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/agent/finalize-abandoned" {

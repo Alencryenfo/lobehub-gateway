@@ -16,7 +16,7 @@
 ## 接口
 
 - `GET /health` 返回 `OK`
-- `GET /ws?userId=&deviceId=&connectionId=&channel=&hostname=&platform=` 升级为设备 WebSocket 连接
+- `GET /ws?userId=&workspaceId=&deviceId=&connectionId=&channel=&hostname=&platform=` 升级为设备 WebSocket 连接
 - `POST /api/device/status`
 - `POST /api/device/devices`
 - `POST /api/device/message-api`
@@ -25,7 +25,9 @@
 - `POST /api/device/rpc`
 - `POST /api/device/agent/run`
 
-所有 `/api/device/*` 接口都需要 `Authorization: Bearer <SERVICE_TOKEN>`，并且 JSON 请求体中必须包含 `userId`。
+所有 `/api/device/*` 接口都需要 `Authorization: Bearer <SERVICE_TOKEN>`，并且 JSON 请求体中必须包含 `userId` 或 `workspaceId`。当存在 `workspaceId` 时，gateway 会把请求路由到隔离的 `workspace:<workspaceId>` 设备池；否则路由到个人的 `user:<userId>` 设备池。
+
+`workspaceId` 是 gateway 的路由与隔离字段，不会作为通用字段下发到 `tool_call_request`、`rpc_request`、`message_api_request` 或 `system_info_request` 等设备 WebSocket 消息中。`POST /api/device/agent/run` 支持 `args` 和 `imageList`，存在时会作为协议字段下发到 `agent_run_request`。
 
 ## 配置
 

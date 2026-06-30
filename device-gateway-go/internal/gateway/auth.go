@@ -24,27 +24,39 @@ type authResolver struct {
 	key   *rsa.PublicKey
 }
 
+type authClaims struct {
+	UserID      string
+	WorkspaceID string
+}
+
 func newAuthResolver(cfg Config) *authResolver {
 	return &authResolver{cfg: cfg}
 }
 
-func (a *authResolver) resolve(ctx context.Context, storedUserID string, msg authMessage) (string, error) {
+func (a *authResolver) resolve(ctx context.Context, h *hub, msg authMessage) (authClaims, error) {
 	if msg.Token == "" {
-		return "", errors.New("Missing token")
+		return authClaims{}, errors.New("Missing token")
 	}
 
 	if msg.TokenType == "apiKey" {
 		if msg.ServerURL == "" {
-			return "", errors.New("Missing serverUrl")
+			return authClaims{}, errors.New("Missing serverUrl")
 		}
-		return verifyAPIKey(ctx, msg.ServerURL, msg.Token)
+		userID, err := verifyAPIKey(ctx, msg.ServerURL, msg.Token)
+		if err != nil {
+			return authClaims{}, err
+		}
+		return authClaims{UserID: userID}, nil
 	}
 
 	if msg.Token == a.cfg.ServiceToken {
-		if storedUserID == "" {
-			return "", errors.New("Missing userId")
+		// Service-token WebSocket auth is a privileged self-hosting/debug bypass.
+		// It authenticates the selected hub directly and is not a user/workspace
+		// ownership check.
+		if h.principal == "" {
+			return authClaims{}, errors.New("Missing principal")
 		}
-		return storedUserID, nil
+		return authClaims{UserID: h.userID, WorkspaceID: h.workspaceID}, nil
 	}
 
 	return a.verifyJWT(msg.Token)
@@ -105,14 +117,14 @@ func verifyAPIKey(ctx context.Context, serverURL string, token string) (string, 
 	return "", errors.New("Current user response did not include a user id.")
 }
 
-func (a *authResolver) verifyJWT(tokenString string) (string, error) {
+func (a *authResolver) verifyJWT(tokenString string) (authClaims, error) {
 	key, err := a.publicKey()
 	if err != nil {
-		return "", err
+		return authClaims{}, err
 	}
 	parts := strings.Split(tokenString, ".")
 	if len(parts) != 3 {
-		return "", errors.New("invalid token")
+		return authClaims{}, errors.New("invalid token")
 	}
 
 	var header struct {
@@ -120,45 +132,46 @@ func (a *authResolver) verifyJWT(tokenString string) (string, error) {
 	}
 	headerBytes, err := base64.RawURLEncoding.DecodeString(parts[0])
 	if err != nil {
-		return "", err
+		return authClaims{}, err
 	}
 	if err := json.Unmarshal(headerBytes, &header); err != nil {
-		return "", err
+		return authClaims{}, err
 	}
 	if header.Alg != "RS256" {
-		return "", fmt.Errorf("unexpected signing method: %s", header.Alg)
+		return authClaims{}, fmt.Errorf("unexpected signing method: %s", header.Alg)
 	}
 
 	signed := []byte(parts[0] + "." + parts[1])
 	sum := sha256.Sum256(signed)
 	sig, err := base64.RawURLEncoding.DecodeString(parts[2])
 	if err != nil {
-		return "", err
+		return authClaims{}, err
 	}
 	if err := rsa.VerifyPKCS1v15(key, crypto.SHA256, sum[:], sig); err != nil {
-		return "", err
+		return authClaims{}, err
 	}
 
 	payloadBytes, err := base64.RawURLEncoding.DecodeString(parts[1])
 	if err != nil {
-		return "", err
+		return authClaims{}, err
 	}
 	var claims map[string]any
 	if err := json.Unmarshal(payloadBytes, &claims); err != nil {
-		return "", err
+		return authClaims{}, err
 	}
 	now := float64(time.Now().Unix())
 	if exp, ok := claims["exp"].(float64); ok && now >= exp {
-		return "", errors.New(`"exp" claim timestamp check failed`)
+		return authClaims{}, errors.New(`"exp" claim timestamp check failed`)
 	}
 	if nbf, ok := claims["nbf"].(float64); ok && now < nbf {
-		return "", errors.New(`"nbf" claim timestamp check failed`)
+		return authClaims{}, errors.New(`"nbf" claim timestamp check failed`)
 	}
 	sub, _ := claims["sub"].(string)
-	if sub == "" {
-		return "", errors.New("Missing sub claim")
+	workspaceID, _ := claims["workspace_id"].(string)
+	if sub == "" && workspaceID == "" {
+		return authClaims{}, errors.New("Missing sub or workspace_id claim")
 	}
-	return sub, nil
+	return authClaims{UserID: sub, WorkspaceID: workspaceID}, nil
 }
 
 func (a *authResolver) publicKey() (*rsa.PublicKey, error) {

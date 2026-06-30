@@ -89,9 +89,15 @@ func (c *connection) readLoop(auth *authResolver, heartbeatTimeout time.Duration
 				c.close(wsClosePolicy, err.Error())
 				return
 			}
-			verifiedUserID, err := auth.resolve(context.Background(), c.hub.userID, msg)
-			if err == nil && verifiedUserID != c.hub.userID {
-				err = errUserIDMismatch
+			verified, err := auth.resolve(context.Background(), c.hub, msg)
+			if err == nil {
+				if c.hub.workspaceID != "" {
+					if verified.WorkspaceID != c.hub.workspaceID {
+						err = errWorkspaceMismatch
+					}
+				} else if verified.UserID != c.hub.userID {
+					err = errUserIDMismatch
+				}
 			}
 			if err != nil {
 				reason := err.Error()
