@@ -179,8 +179,9 @@ func (s *Server) handleDeviceAPI(w http.ResponseWriter, r *http.Request, body de
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request, body deviceHTTPBody) {
-	connections := s.hubFor(body.UserID, body.WorkspaceID).authenticatedConnections()
-	writeJSON(w, http.StatusOK, map[string]any{"deviceCount": s.hubFor(body.UserID, body.WorkspaceID).deviceCount(), "online": len(connections) > 0})
+	h := s.hubFor(body.UserID, body.WorkspaceID)
+	connections := h.authenticatedConnections()
+	writeJSON(w, http.StatusOK, map[string]any{"deviceCount": h.deviceCount(), "online": len(connections) > 0})
 }
 
 func (s *Server) handleDevices(w http.ResponseWriter, _ *http.Request, body deviceHTTPBody) {

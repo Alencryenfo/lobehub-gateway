@@ -133,11 +133,12 @@ func (o *operation) pushEvent(event agentStreamEvent) {
 	o.mu.Unlock()
 	broadcast(connections, msg)
 
-	if event.Type == "agent_runtime_end" && (event.OperationID == "" || event.OperationID == operationID) {
+	isOwnOrLegacy := event.OperationID == "" || event.OperationID == operationID
+	if event.Type == "agent_runtime_end" && isOwnOrLegacy {
 		o.handleAgentRuntimeEnd(event)
 		return
 	}
-	if event.Type == "error" {
+	if event.Type == "error" && isOwnOrLegacy {
 		o.handleSessionEnd(StatusError, "")
 	}
 }
@@ -185,6 +186,10 @@ func (o *operation) handleSessionEnd(status SessionStatus, summary string) {
 
 func (o *operation) updateStatus(status SessionStatus, summary string) {
 	o.mu.Lock()
+	if isTerminalStatus(o.record.Status) {
+		o.mu.Unlock()
+		return
+	}
 	o.record.Status = status
 	id := o.nextEventIDLocked()
 	var msg map[string]any
