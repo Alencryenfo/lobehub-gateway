@@ -16,7 +16,7 @@ The original Cloudflare Worker Device Gateway remains the reference implementati
 ## Endpoints
 
 - `GET /health` returns `OK`
-- `GET /ws?userId=&workspaceId=&deviceId=&connectionId=&channel=&hostname=&platform=` upgrades a device WebSocket
+- `GET /ws?userId=&deviceId=&connectionId=&channel=&hostname=&platform=` upgrades a device WebSocket
 - `POST /api/device/status`
 - `POST /api/device/devices`
 - `POST /api/device/message-api`
@@ -25,9 +25,7 @@ The original Cloudflare Worker Device Gateway remains the reference implementati
 - `POST /api/device/rpc`
 - `POST /api/device/agent/run`
 
-All `/api/device/*` endpoints require `Authorization: Bearer <SERVICE_TOKEN>` and a JSON body containing either `userId` or `workspaceId`. When `workspaceId` is present, the gateway routes the request to the isolated `workspace:<workspaceId>` device pool; otherwise it routes to the personal `user:<userId>` pool.
-
-`workspaceId` is a gateway routing and isolation field. It is not added as a generic field to device WebSocket messages such as `tool_call_request`, `rpc_request`, `message_api_request`, or `system_info_request`. `POST /api/device/agent/run` accepts `args` and `imageList` and forwards those protocol fields in `agent_run_request` when present.
+All `/api/device/*` endpoints require `Authorization: Bearer <SERVICE_TOKEN>` and a JSON body containing `userId`.
 
 ## Configuration
 

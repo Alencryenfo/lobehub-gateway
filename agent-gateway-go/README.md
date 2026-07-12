@@ -35,8 +35,6 @@ The original Cloudflare Worker Agent Gateway remains the reference implementatio
 
 All `/api/operations/*` endpoints require `Authorization: Bearer <SERVICE_TOKEN>`. The `/ws` endpoint authenticates via the first WebSocket message, which carries either a JWT signed by the LobeHub Server (verified against `JWKS_PUBLIC_KEY`) or the shared service token.
 
-A pushed event may be delivered on one operation channel while its payload keeps a different `event.operationId` for supervisor/member mirroring. The gateway forwards the event to browser clients, but only treats `agent_runtime_end` as terminal for the delivery operation when `event.operationId` is empty or matches the current operation. Browser clients can resume with `{ "type": "resume", "lastEventId": "...", "wantStatus": true }`; when requested, the gateway replies with `{ "type": "resume_complete", "status": "..." }` after replaying buffered events.
-
 ## Configuration
 
 | Variable | Default | Description |

@@ -122,18 +122,10 @@ func TestWebSocketPushAndResume(t *testing.T) {
 	defer ws2.close()
 	ws2.writeJSON(t, map[string]any{"type": "auth", "token": "service-token"})
 	_ = ws2.readJSON(t)
-	ws2.writeJSON(t, map[string]any{
-		"type":        "resume",
-		"lastEventId": "1",
-		"wantStatus":  true,
-	})
+	ws2.writeJSON(t, map[string]any{"type": "resume", "lastEventId": "1"})
 	resumed := ws2.readJSON(t)
 	if resumed["type"] != "agent_event" || resumed["id"] != "2" {
 		t.Fatalf("unexpected resumed event: %+v", resumed)
-	}
-	complete := ws2.readJSON(t)
-	if complete["type"] != "resume_complete" || complete["status"] != string(StatusRunning) {
-		t.Fatalf("unexpected resume complete: %+v", complete)
 	}
 }
 
@@ -214,122 +206,6 @@ func TestConfirmationAndInput(t *testing.T) {
 	ws.writeJSON(t, map[string]any{"type": "user_input", "requestId": requestID, "content": "alice"})
 	if result := <-inputDone; result["content"] != "alice" {
 		t.Fatalf("unexpected input result: %+v", result)
-	}
-}
-
-func TestMirroredRuntimeEndDoesNotEndDeliveryOperation(t *testing.T) {
-	srv, ts := testServer()
-	defer ts.Close()
-	postJSON(t, ts.URL+"/api/operations/init", map[string]any{"operationId": "op-supervisor", "userId": "user-1"}, http.StatusOK)
-
-	ws := dialWebSocket(t, ts.URL, "/ws?operationId=op-supervisor")
-	defer ws.close()
-	ws.writeJSON(t, map[string]any{"type": "auth", "token": "service-token"})
-	_ = ws.readJSON(t)
-
-	postJSON(t, ts.URL+"/api/operations/push-event", map[string]any{
-		"operationId": "op-supervisor",
-		"event": map[string]any{
-			"data":        map[string]any{},
-			"operationId": "op-member",
-			"stepIndex":   0,
-			"timestamp":   time.Now().UnixMilli(),
-			"type":        "agent_runtime_end",
-		},
-	}, http.StatusOK)
-
-	msg := ws.readJSON(t)
-	if msg["type"] != "agent_event" || msg["id"] != "1" {
-		t.Fatalf("expected mirrored agent_event only, got %+v", msg)
-	}
-	wsExpectNoMessage(t, ws, 100*time.Millisecond)
-	_, status := srv.getOperation("op-supervisor").statusSnapshot()
-	if status != StatusRunning {
-		t.Fatalf("expected supervisor to remain running, got %s", status)
-	}
-}
-
-func TestMirroredErrorDoesNotEndDeliveryOperation(t *testing.T) {
-	srv, ts := testServer()
-	defer ts.Close()
-	postJSON(t, ts.URL+"/api/operations/init", map[string]any{"operationId": "op-supervisor", "userId": "user-1"}, http.StatusOK)
-
-	ws := dialWebSocket(t, ts.URL, "/ws?operationId=op-supervisor")
-	defer ws.close()
-	ws.writeJSON(t, map[string]any{"type": "auth", "token": "service-token"})
-	_ = ws.readJSON(t)
-
-	postJSON(t, ts.URL+"/api/operations/push-event", map[string]any{
-		"operationId": "op-supervisor",
-		"event": map[string]any{
-			"data":        map[string]any{"message": "member failed"},
-			"operationId": "op-member",
-			"stepIndex":   0,
-			"timestamp":   time.Now().UnixMilli(),
-			"type":        "error",
-		},
-	}, http.StatusOK)
-
-	msg := ws.readJSON(t)
-	if msg["type"] != "agent_event" || msg["id"] != "1" {
-		t.Fatalf("expected mirrored agent_event only, got %+v", msg)
-	}
-	wsExpectNoMessage(t, ws, 100*time.Millisecond)
-	_, status := srv.getOperation("op-supervisor").statusSnapshot()
-	if status != StatusRunning {
-		t.Fatalf("expected supervisor to remain running, got %s", status)
-	}
-}
-
-func TestRuntimeEndGuardAllowsOwnAndLegacyEvents(t *testing.T) {
-	srv := NewServer(Config{ServiceToken: "service-token", LobeAPIBaseURL: "http://127.0.0.1:1"})
-
-	own := srv.getOrCreateOperation("op-own")
-	own.init("op-own", "user-1")
-	own.pushEvent(agentStreamEvent{Data: json.RawMessage(`{}`), OperationID: "op-own", Type: "agent_runtime_end"})
-	_, status := own.statusSnapshot()
-	if status != StatusCompleted {
-		t.Fatalf("expected own runtime end to complete operation, got %s", status)
-	}
-
-	legacy := srv.getOrCreateOperation("op-legacy")
-	legacy.init("op-legacy", "user-1")
-	legacy.pushEvent(agentStreamEvent{Data: json.RawMessage(`{}`), Type: "agent_runtime_end"})
-	_, status = legacy.statusSnapshot()
-	if status != StatusCompleted {
-		t.Fatalf("expected legacy runtime end to complete operation, got %s", status)
-	}
-}
-
-func TestErrorGuardAllowsOwnAndLegacyEvents(t *testing.T) {
-	srv := NewServer(Config{ServiceToken: "service-token", LobeAPIBaseURL: "http://127.0.0.1:1"})
-
-	own := srv.getOrCreateOperation("op-own-error")
-	own.init("op-own-error", "user-1")
-	own.pushEvent(agentStreamEvent{Data: json.RawMessage(`{"message":"failed"}`), OperationID: "op-own-error", Type: "error"})
-	_, status := own.statusSnapshot()
-	if status != StatusError {
-		t.Fatalf("expected own error to fail operation, got %s", status)
-	}
-
-	legacy := srv.getOrCreateOperation("op-legacy-error")
-	legacy.init("op-legacy-error", "user-1")
-	legacy.pushEvent(agentStreamEvent{Data: json.RawMessage(`{"message":"failed"}`), Type: "error"})
-	_, status = legacy.statusSnapshot()
-	if status != StatusError {
-		t.Fatalf("expected legacy error to fail operation, got %s", status)
-	}
-}
-
-func TestUpdateStatusDoesNotOverwriteTerminalOperation(t *testing.T) {
-	srv := NewServer(Config{ServiceToken: "service-token", LobeAPIBaseURL: "http://127.0.0.1:1"})
-	op := srv.getOrCreateOperation("op-terminal")
-	op.init("op-terminal", "user-1")
-	op.handleSessionEnd(StatusCompleted, "done")
-	op.updateStatus(StatusError, "late error")
-	_, status := op.statusSnapshot()
-	if status != StatusCompleted {
-		t.Fatalf("expected terminal status to remain completed, got %s", status)
 	}
 }
 

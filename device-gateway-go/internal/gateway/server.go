@@ -53,25 +53,14 @@ func (s *Server) Routes() http.Handler {
 	return mux
 }
 
-func principalKey(userID, workspaceID string) string {
-	if workspaceID != "" {
-		return "workspace:" + workspaceID
-	}
-	return "user:" + userID
-}
-
-func (s *Server) hubFor(userID, workspaceID string) *hub {
-	return s.hub(principalKey(userID, workspaceID), userID, workspaceID)
-}
-
-func (s *Server) hub(principal string, userID string, workspaceID string) *hub {
+func (s *Server) hub(userID string) *hub {
 	s.hubsMu.Lock()
 	defer s.hubsMu.Unlock()
-	if existing := s.hubs[principal]; existing != nil {
+	if existing := s.hubs[userID]; existing != nil {
 		return existing
 	}
-	h := newHub(principal, userID, workspaceID)
-	s.hubs[principal] = h
+	h := newHub(userID)
+	s.hubs[userID] = h
 	return h
 }
 
@@ -94,8 +83,8 @@ func (s *Server) withServiceAuth(next func(http.ResponseWriter, *http.Request, d
 				return
 			}
 		}
-		if body.UserID == "" && body.WorkspaceID == "" {
-			writeText(w, http.StatusBadRequest, "Missing userId or workspaceId")
+		if body.UserID == "" {
+			writeText(w, http.StatusBadRequest, "Missing userId")
 			return
 		}
 		next(w, r, body)
@@ -104,9 +93,8 @@ func (s *Server) withServiceAuth(next func(http.ResponseWriter, *http.Request, d
 
 func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	userID := r.URL.Query().Get("userId")
-	workspaceID := r.URL.Query().Get("workspaceId")
-	if userID == "" && workspaceID == "" {
-		writeText(w, http.StatusBadRequest, "Missing userId or workspaceId")
+	if userID == "" {
+		writeText(w, http.StatusBadRequest, "Missing userId")
 		return
 	}
 
@@ -116,7 +104,7 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 
 	now := time.Now().UnixMilli()
-	h := s.hubFor(userID, workspaceID)
+	h := s.hub(userID)
 	conn := &connection{
 		att: DeviceAttachment{
 			Authenticated: false,
@@ -179,17 +167,16 @@ func (s *Server) handleDeviceAPI(w http.ResponseWriter, r *http.Request, body de
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request, body deviceHTTPBody) {
-	h := s.hubFor(body.UserID, body.WorkspaceID)
-	connections := h.authenticatedConnections()
-	writeJSON(w, http.StatusOK, map[string]any{"deviceCount": h.deviceCount(), "online": len(connections) > 0})
+	connections := s.hub(body.UserID).authenticatedConnections()
+	writeJSON(w, http.StatusOK, map[string]any{"deviceCount": s.hub(body.UserID).deviceCount(), "online": len(connections) > 0})
 }
 
 func (s *Server) handleDevices(w http.ResponseWriter, _ *http.Request, body deviceHTTPBody) {
-	writeJSON(w, http.StatusOK, map[string]any{"devices": s.hubFor(body.UserID, body.WorkspaceID).devices()})
+	writeJSON(w, http.StatusOK, map[string]any{"devices": s.hub(body.UserID).devices()})
 }
 
 func (s *Server) handleToolCall(w http.ResponseWriter, _ *http.Request, body deviceHTTPBody) {
-	h := s.hubFor(body.UserID, body.WorkspaceID)
+	h := s.hub(body.UserID)
 	if len(h.authenticatedConnections()) == 0 {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"content": "桌面设备不在线", "error": "DEVICE_OFFLINE", "success": false})
 		return
@@ -224,7 +211,7 @@ func (s *Server) handleToolCall(w http.ResponseWriter, _ *http.Request, body dev
 }
 
 func (s *Server) handleSystemInfo(w http.ResponseWriter, _ *http.Request, body deviceHTTPBody) {
-	h := s.hubFor(body.UserID, body.WorkspaceID)
+	h := s.hub(body.UserID)
 	if len(h.authenticatedConnections()) == 0 {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "DEVICE_OFFLINE", "success": false})
 		return
@@ -253,7 +240,7 @@ func (s *Server) handleRPC(w http.ResponseWriter, _ *http.Request, body deviceHT
 		writeText(w, http.StatusBadRequest, "Missing method")
 		return
 	}
-	h := s.hubFor(body.UserID, body.WorkspaceID)
+	h := s.hub(body.UserID)
 	if len(h.authenticatedConnections()) == 0 {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "DEVICE_OFFLINE", "success": false})
 		return
@@ -288,7 +275,7 @@ func (s *Server) handleRPC(w http.ResponseWriter, _ *http.Request, body deviceHT
 }
 
 func (s *Server) handleMessageAPI(w http.ResponseWriter, _ *http.Request, body deviceHTTPBody) {
-	h := s.hubFor(body.UserID, body.WorkspaceID)
+	h := s.hub(body.UserID)
 	if len(h.authenticatedConnections()) == 0 {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"content": "桌面设备不在线", "error": "DEVICE_OFFLINE", "success": false})
 		return
@@ -325,7 +312,7 @@ func (s *Server) handleAgentRun(w http.ResponseWriter, _ *http.Request, body dev
 		writeText(w, http.StatusBadRequest, "Missing operationId")
 		return
 	}
-	h := s.hubFor(body.UserID, body.WorkspaceID)
+	h := s.hub(body.UserID)
 	if len(h.authenticatedConnections()) == 0 {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "DEVICE_OFFLINE", "success": false})
 		return
@@ -354,12 +341,6 @@ func (s *Server) handleAgentRun(w http.ResponseWriter, _ *http.Request, body dev
 	}
 	if body.SystemContext != "" {
 		msg["systemContext"] = body.SystemContext
-	}
-	if len(body.Args) > 0 {
-		msg["args"] = body.Args
-	}
-	if len(body.ImageList) > 0 {
-		msg["imageList"] = json.RawMessage(body.ImageList)
 	}
 
 	result, status := h.dispatch(target, key, timeout, msg)

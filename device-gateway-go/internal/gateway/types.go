@@ -46,10 +46,8 @@ type rpcEnvelope struct {
 type deviceHTTPBody struct {
 	AgentType       string          `json:"agentType,omitempty"`
 	API             json.RawMessage `json:"api,omitempty"`
-	Args            []string        `json:"args,omitempty"`
 	CWD             string          `json:"cwd,omitempty"`
 	DeviceID        string          `json:"deviceId,omitempty"`
-	ImageList       json.RawMessage `json:"imageList,omitempty"`
 	JWT             string          `json:"jwt,omitempty"`
 	Method          string          `json:"method,omitempty"`
 	OperationID     string          `json:"operationId,omitempty"`
@@ -60,6 +58,5 @@ type deviceHTTPBody struct {
 	Timeout         int             `json:"timeout,omitempty"`
 	ToolCall        json.RawMessage `json:"toolCall,omitempty"`
 	TopicID         string          `json:"topicId,omitempty"`
-	UserID          string          `json:"userId,omitempty"`
-	WorkspaceID     string          `json:"workspaceId,omitempty"`
+	UserID          string          `json:"userId"`
 }

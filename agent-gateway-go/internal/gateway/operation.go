@@ -128,18 +128,12 @@ func (o *operation) pushEvent(event agentStreamEvent) {
 	o.lastEventAt = time.Now()
 	o.lastEventTyp = event.Type
 	o.scheduleWatchdogLocked()
-	operationID := o.record.OperationID
 	connections := o.authenticatedConnectionsLocked()
 	o.mu.Unlock()
 	broadcast(connections, msg)
 
-	isOwnOrLegacy := event.OperationID == "" || event.OperationID == operationID
-	if event.Type == "agent_runtime_end" && isOwnOrLegacy {
+	if event.Type == "agent_runtime_end" {
 		o.handleAgentRuntimeEnd(event)
-		return
-	}
-	if event.Type == "error" && isOwnOrLegacy {
-		o.handleSessionEnd(StatusError, "")
 	}
 }
 
@@ -158,11 +152,10 @@ func (o *operation) handleAgentRuntimeEnd(event agentStreamEvent) {
 	var data agentRuntimeEndData
 	_ = json.Unmarshal(event.Data, &data)
 	status := StatusCompleted
-	switch data.Reason {
-	case "interrupted", "waiting_for_async_tool":
-		status = StatusInterrupted
-	case "error", "failed":
+	if data.Reason == "error" {
 		status = StatusError
+	} else if data.Reason == "interrupted" {
+		status = StatusInterrupted
 	}
 	o.handleSessionEnd(status, data.ReasonDetail)
 }
@@ -170,10 +163,6 @@ func (o *operation) handleAgentRuntimeEnd(event agentStreamEvent) {
 func (o *operation) handleSessionEnd(status SessionStatus, summary string) {
 	msg := map[string]any{"summary": summary, "type": "session_complete"}
 	o.mu.Lock()
-	if isTerminalStatus(o.record.Status) {
-		o.mu.Unlock()
-		return
-	}
 	o.record.Status = status
 	id := o.nextEventIDLocked()
 	msg["id"] = id
@@ -186,10 +175,6 @@ func (o *operation) handleSessionEnd(status SessionStatus, summary string) {
 
 func (o *operation) updateStatus(status SessionStatus, summary string) {
 	o.mu.Lock()
-	if isTerminalStatus(o.record.Status) {
-		o.mu.Unlock()
-		return
-	}
 	o.record.Status = status
 	id := o.nextEventIDLocked()
 	var msg map[string]any
@@ -286,7 +271,7 @@ func (o *operation) resolveInput(requestID string, content string) {
 	}
 }
 
-func (o *operation) handleResume(conn *operationConnection, lastEventID string, wantStatus bool) {
+func (o *operation) handleResume(conn *operationConnection, lastEventID string) {
 	o.mu.RLock()
 	idx := -1
 	for i, event := range o.eventBuffer {
@@ -303,20 +288,9 @@ func (o *operation) handleResume(conn *operationConnection, lastEventID string, 
 	for _, event := range missed {
 		payloads = append(payloads, append(json.RawMessage(nil), event.Data...))
 	}
-	status := o.record.Status
-	if status == "" {
-		// Resume is scoped to an existing operation; this is only a defensive fallback.
-		status = StatusRunning
-	}
 	o.mu.RUnlock()
 	for _, payload := range payloads {
 		_ = conn.writeRaw(payload)
-	}
-	if wantStatus {
-		_ = conn.writeJSON(resumeCompleteMessage{
-			Type:   "resume_complete",
-			Status: status,
-		})
 	}
 }
 
@@ -680,9 +654,11 @@ func (c *operationConnection) handleAuth(payload []byte) {
 func (c *operationConnection) handleAuthenticatedMessage(messageType string, payload []byte) {
 	switch messageType {
 	case "resume":
-		var msg resumeMessage
+		var msg struct {
+			LastEventID string `json:"lastEventId"`
+		}
 		if json.Unmarshal(payload, &msg) == nil {
-			c.operation.handleResume(c, msg.LastEventID, msg.WantStatus)
+			c.operation.handleResume(c, msg.LastEventID)
 		}
 	case "heartbeat":
 		c.recordHeartbeat()

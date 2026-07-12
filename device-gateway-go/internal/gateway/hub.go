@@ -7,10 +7,7 @@ import (
 	"time"
 )
 
-var (
-	errUserIDMismatch    = errors.New("userId mismatch")
-	errWorkspaceMismatch = errors.New("workspaceId mismatch")
-)
+var errUserIDMismatch = errors.New("userId mismatch")
 
 type pendingRequest struct {
 	resolve func(rpcEnvelope)
@@ -29,18 +26,14 @@ type hub struct {
 	connections map[string]*connection
 	pending     map[string]pendingRequest
 	mu          sync.RWMutex
-	principal   string
 	userID      string
-	workspaceID string
 }
 
-func newHub(principal string, userID string, workspaceID string) *hub {
+func newHub(userID string) *hub {
 	return &hub{
 		connections: map[string]*connection{},
 		pending:     map[string]pendingRequest{},
-		principal:   principal,
 		userID:      userID,
-		workspaceID: workspaceID,
 	}
 }
 
